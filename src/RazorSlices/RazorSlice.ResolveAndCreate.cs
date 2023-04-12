@@ -167,6 +167,15 @@ public abstract partial class RazorSlice
         var sliceVariable = Expression.Variable(sliceType, "slice");
         var serviceProviderParam = Expression.Parameter(serviceProviderType, "serviceProvider");
 
+        // Create expression to set Layout (if layout is specified)
+        var layoutAttribute = sliceType.GetCustomAttribute<LayoutAttribute>();
+        if (layoutAttribute != null)
+        {
+            string layoutPath = layoutAttribute.Identifier;
+            var layoutMember = Expression.MakeMemberAccess(sliceVariable, sliceType.GetProperty(nameof(Layout))!);
+            expressions.Add(Expression.Assign(layoutMember, Expression.Constant(layoutPath)));
+        }
+
         // Create expressions to set all the injectable properties
         foreach (PropertyInfo injectablePropertyInfo in injectableProperties)
         {
@@ -277,11 +286,11 @@ public abstract partial class RazorSlice
     public static SliceFactory ResolveSliceFactory(string sliceName) => ResolveSliceFactoryImpl(sliceName);
 
     /// <summary>
-    /// Resolves a <see cref="SliceFactory" /> delegate for the provided template name.
+    /// Resolves a <see cref="SliceWithServicesFactory" /> delegate for the provided template name.
     /// </summary>
     /// <param name="sliceName">The project-relative path to the template .cshtml file, e.g. /Slices/MyTemplate.cshtml<c></c></param>
     /// <returns>The <see cref="SliceWithServicesFactory" /> delegate that can be used to create instances of the template.</returns>
-    public static SliceWithServicesFactory ResolveSliceWithServiceFactory(string sliceName) => ResolveSliceWithServiceFactoryImpl(sliceName);
+    public static SliceWithServicesFactory ResolveSliceWithServicesFactory(string sliceName) => ResolveSliceWithServicesFactoryImpl(sliceName);
 
     /// <summary>
     /// Resolves a <see cref="SliceFactory{TModel}" /> delegate for the provided template name with a typed model.
@@ -292,13 +301,13 @@ public abstract partial class RazorSlice
     public static SliceFactory<TModel> ResolveSliceFactory<TModel>(string sliceName) => ResolveSliceFactoryImpl<TModel>(sliceName);
 
     /// <summary>
-    /// Resolves a <see cref="SliceFactory{TModel}" /> delegate for the provided template name with a typed model.
+    /// Resolves a <see cref="SliceWithServicesFactory{TModel}" /> delegate for the provided template name with a typed model.
     /// </summary>
     /// <param name="sliceName">The project-relative path to the template .cshtml file, e.g. /Slices/MyTemplate.cshtml<c></c></param>
     /// <typeparam name="TModel">The template model type.</typeparam>
     /// <returns>The <see cref="SliceWithServicesFactory{TModel}" /> delegate that can be used to create instances of the template.</returns>
-    public static SliceWithServicesFactory<TModel> ResolveSliceWithServiceFactory<TModel>(string sliceName) 
-        => ResolveSliceWithServiceFactoryImpl<TModel>(sliceName);
+    public static SliceWithServicesFactory<TModel> ResolveSliceWithServicesFactory<TModel>(string sliceName) 
+        => ResolveSliceWithServicesFactoryImpl<TModel>(sliceName);
 
     /// <summary>
     /// Resolves a <see cref="SliceFactory" /> delegate for the provided template <see cref="Type" />.
@@ -374,12 +383,7 @@ public abstract partial class RazorSlice
 
     private static Type ResolveSliceType(string sliceName, Type mustBeAssignableTo)
     {
-        if (!_slicesByName.ContainsKey(sliceName))
-        {
-            throw new ArgumentException($"No Razor slice with name '{sliceName}' was found.", nameof(sliceName));
-        }
-
-        var sliceDefinition = _slicesByName[sliceName];
+        var sliceDefinition = ResolveSliceDefinition(sliceName);
         var sliceType = sliceDefinition.SliceType;
 
         if (!sliceType.IsAssignableTo(mustBeAssignableTo))
@@ -393,12 +397,7 @@ public abstract partial class RazorSlice
 
     private static SliceFactory ResolveSliceFactoryImpl(string sliceName)
     {
-        if (!_slicesByName.ContainsKey(sliceName))
-        {
-            throw new ArgumentException($"No Razor slice with name '{sliceName}' was found.", nameof(sliceName));
-        }
-
-        var sliceDefinition = _slicesByName[sliceName];
+        var sliceDefinition = ResolveSliceDefinition(sliceName);
 
         if (sliceDefinition.HasInjectableProperties)
         {
@@ -408,26 +407,16 @@ public abstract partial class RazorSlice
         return (SliceFactory)sliceDefinition.Factory;
     }
 
-    private static SliceWithServicesFactory ResolveSliceWithServiceFactoryImpl(string sliceName)
+    private static SliceWithServicesFactory ResolveSliceWithServicesFactoryImpl(string sliceName)
     {
-        if (!_slicesByName.ContainsKey(sliceName))
-        {
-            throw new ArgumentException($"No Razor slice with name '{sliceName}' was found.", nameof(sliceName));
-        }
-
-        var sliceDefinition = _slicesByName[sliceName];
+        var sliceDefinition = ResolveSliceDefinition(sliceName);
 
         return (SliceWithServicesFactory)sliceDefinition.Factory;
     }
 
     private static SliceFactory<TModel> ResolveSliceFactoryImpl<TModel>(string sliceName)
     {
-        if (!_slicesByName.ContainsKey(sliceName))
-        {
-            throw new ArgumentException($"No Razor slice with name '{sliceName}' was found.", nameof(sliceName));
-        }
-
-        var sliceDefinition = _slicesByName[sliceName];
+        var sliceDefinition = ResolveSliceDefinition(sliceName);
 
         if (sliceDefinition.HasInjectableProperties)
         {
@@ -448,14 +437,9 @@ public abstract partial class RazorSlice
         throw new InvalidOperationException($"Razor slice with name '{sliceName}' was found but does not declare a model type. Ensure the slice uses `@inherits RazorSlice<{typeof(TModel).Name}>` or `@inherits RazorSliceHttpResult<{typeof(TModel).Name}>` to declare the model type.");
     }
 
-    private static SliceWithServicesFactory<TModel> ResolveSliceWithServiceFactoryImpl<TModel>(string sliceName)
+    private static SliceWithServicesFactory<TModel> ResolveSliceWithServicesFactoryImpl<TModel>(string sliceName)
     {
-        if (!_slicesByName.ContainsKey(sliceName))
-        {
-            throw new ArgumentException($"No Razor slice with name '{sliceName}' was found.", nameof(sliceName));
-        }
-
-        var sliceDefinition = _slicesByName[sliceName];
+        var sliceDefinition = ResolveSliceDefinition(sliceName);
 
         if (sliceDefinition.Factory is SliceWithServicesFactory<TModel> factory)
         {
@@ -469,5 +453,15 @@ public abstract partial class RazorSlice
         }
 
         throw new InvalidOperationException($"Razor slice with name '{sliceName}' was found but does not declare a model type. Ensure the slice uses `@inherits RazorSlice<{typeof(TModel).Name}>` or `@inherits RazorSliceHttpResult<{typeof(TModel).Name}>` to declare the model type.");
+    }
+
+    private static SliceDefinition ResolveSliceDefinition(string sliceName)
+    {
+        if (!_slicesByName.ContainsKey(sliceName))
+        {
+            throw new ArgumentException($"No Razor slice with name '{sliceName}' was found.", nameof(sliceName));
+        }
+
+        return _slicesByName[sliceName];
     }
 }
