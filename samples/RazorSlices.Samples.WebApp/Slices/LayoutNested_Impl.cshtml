@@ -1,0 +1,21 @@
+﻿@using RazorSlices.Samples.WebApp.Services;
+@using RazorSlices;
+
+@inherits RazorSliceHttpResult
+@attribute [Layout("/Slices/LayoutNested.cshtml")]
+
+@inject LoremService service
+
+<p class="text-success">Nested layout 3 body:</p>
+<p>@service.Sentences(1)</p>
+
+@RenderBody()
+@RenderSectionAsync("Section4", false)
+
+@section Extra {
+    <p class="text-success">Nested layout 3 Extra section:</p>
+    <p>@service.Sentences(1)</p>
+}
+
+
+

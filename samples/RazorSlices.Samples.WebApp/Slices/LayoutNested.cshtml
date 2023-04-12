@@ -1,0 +1,25 @@
+﻿@inherits RazorSliceHttpResult
+
+@using RazorSlices;
+@using RazorSlices.Samples.WebApp.Services;
+@attribute [Layout("/Slices/Layout.cshtml")]
+
+@inject LoremService service
+
+@{
+    string title = "Nested layout 2";
+}
+
+@section Head {
+    <title>@title</title>
+}
+
+<h1 class="mt-5">@title</h1>
+@RenderSectionAsync("Extra", required: false)
+@RenderBody()
+
+@section Scripts {
+    <script>console.log("Nested layout")</script>
+}
+
+

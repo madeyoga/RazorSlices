@@ -40,6 +40,9 @@ app.MapGet("/{id:int}", (int id) =>
         : Results.NotFound();
 });
 
+app.MapGet("/layout", (IServiceProvider serviceProvider) => Results.Extensions.RazorSlice("/Slices/Layout_Impl.cshtml", serviceProvider));
+app.MapGet("/layout-nested", (IServiceProvider serviceProvider) => Results.Extensions.RazorSlice("/Slices/LayoutNested_Impl_2.cshtml", serviceProvider));
+
 app.Run();
 
 struct LoremParams

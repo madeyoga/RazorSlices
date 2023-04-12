@@ -1,0 +1,18 @@
+﻿@inherits RazorSliceHttpResult
+
+@using RazorSlices;
+@using RazorSlices.Samples.WebApp.Services;
+
+@inject LoremService service
+@attribute [Layout("/Slices/Layout.cshtml")]
+
+@section Head {
+    <title>Support for layout and sections</title>
+}
+
+<p class="text-success">Layout impl body:</p>
+<p>@service.Sentences(4)</p>
+
+@section Content {
+    <p>This is `@@section` Content</p>
+}

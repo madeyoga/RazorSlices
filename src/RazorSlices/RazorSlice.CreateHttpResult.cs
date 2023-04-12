@@ -27,7 +27,7 @@ public abstract partial class RazorSlice
     /// <returns>The <see cref="RazorSliceHttpResult" /> instance.</returns>
     public static RazorSliceHttpResult CreateHttpResult(string sliceName, IServiceProvider serviceProvider, int statusCode = StatusCodes.Status200OK)
     {
-        var result = (RazorSliceHttpResult)Create(ResolveSliceWithServiceFactory(sliceName), serviceProvider);
+        var result = (RazorSliceHttpResult)Create(ResolveSliceWithServicesFactory(sliceName), serviceProvider);
         result.StatusCode = statusCode;
         return result;
     }
@@ -71,7 +71,7 @@ public abstract partial class RazorSlice
     /// <returns>The <see cref="RazorSliceHttpResult{TModel}" /> instance.</returns>
     public static RazorSliceHttpResult<TModel> CreateHttpResult<TModel>(string sliceName, TModel model, IServiceProvider serviceProvider, int statusCode = StatusCodes.Status200OK)
     {
-        var result = (RazorSliceHttpResult<TModel>)Create(ResolveSliceWithServiceFactory<TModel>(sliceName), model, serviceProvider);
+        var result = (RazorSliceHttpResult<TModel>)Create(ResolveSliceWithServicesFactory<TModel>(sliceName), model, serviceProvider);
         result.StatusCode = statusCode;
         return result;
     }

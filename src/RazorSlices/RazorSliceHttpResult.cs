@@ -44,7 +44,7 @@ public abstract class RazorSliceHttpResult : RazorSlice, IResult
         httpContext.Response.ContentType = ContentType;
         httpContext.Response.RegisterForDispose(this);
 
-        var renderTask = this.RenderToPipeWriterAsync(httpContext.Response.BodyWriter, HtmlEncoder);
+        var renderTask = this.RenderToPipeWriterAsync(httpContext.Response.BodyWriter, htmlEncoder: HtmlEncoder, serviceProvider: httpContext.RequestServices);
 
         if (renderTask.IsCompletedSuccessfully)
         {
