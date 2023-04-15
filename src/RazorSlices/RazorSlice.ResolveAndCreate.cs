@@ -338,6 +338,29 @@ public abstract partial class RazorSlice
     public static RazorSlice Create(string sliceName) => Create(ResolveSliceFactory(sliceName));
 
     /// <summary>
+    /// Creates an instance of a <see cref="RazorSlice" /> template for the provided template name.
+    /// </summary>
+    /// <param name="sliceName">The project-relative path to the template .cshtml file, e.g. /Slices/MyTemplate.cshtml<c></c></param>
+    /// <param name="serviceProvider">The <see cref="IServiceProvider" /> to use when setting the template's <c>@inject</c> properties.</param>
+    /// <returns>A <see cref="RazorSlice" /> instance for the template.</returns>
+    /// <exception cref="InvalidOperationException"></exception>
+    public static RazorSlice Create(string sliceName, IServiceProvider? serviceProvider = null)
+    {
+        SliceDefinition definition = ResolveSliceDefinition(sliceName);
+
+        if (definition.HasInjectableProperties)
+        {
+            if (serviceProvider == null)
+            {
+                throw new InvalidOperationException($"{sliceName} has injectable properties but IServiceProvider is not provided");
+            }
+            return Create((SliceWithServicesFactory) definition.Factory, serviceProvider);
+        }
+
+        return Create((SliceFactory) definition.Factory);
+    }
+
+    /// <summary>
     /// Creates an instance of a <see cref="RazorSlice" /> template using the provided <see cref="SliceFactory" /> delegate.
     /// </summary>
     /// <param name="sliceFactory">The <see cref="SliceFactory" /> delegate to create the template with.</param>
