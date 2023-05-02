@@ -49,7 +49,7 @@ internal sealed class SliceDefinition
     internal IEnumerable<PropertyInfo> InjectableProperties => _injectableProperties;
 
     /// <summary>
-    /// Gets a value indicating whether this slice definition has any dependency-injected properties
+    /// Gets a value indicating whether this slice definition has any dependency-injected properties.
     /// </summary>
-    public bool HasInjectableProperties { get; }
+    internal bool HasInjectableProperties { get; }
 }

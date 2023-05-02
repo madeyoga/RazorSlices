@@ -94,7 +94,7 @@ public abstract partial class RazorSlice
             if (injectableProperties.Any())
             {
                 // if rci has injectable properties then create a SliceWithServicesFactory
-                sliceFactory = GetSliceFactory(rci.Type, injectableProperties);
+                sliceFactory = GetSliceWithServicesFactory(rci.Type, injectableProperties);
             }
             else
             {
@@ -109,6 +109,12 @@ public abstract partial class RazorSlice
 
     private static Delegate GetSliceFactory(Type sliceType)
     {
+        var layoutAttribute = sliceType.GetCustomAttribute<LayoutAttribute>();
+        var sliceVariable = Expression.Variable(sliceType, "slice");
+
+        string layoutPath = layoutAttribute != null ? layoutAttribute.Identifier : "";
+        var layoutMember = Expression.MakeMemberAccess(sliceVariable, sliceType.GetProperty(nameof(Layout))!);
+
         if (IsModelSlice(sliceType))
         {
             if (sliceType.GetConstructor(Array.Empty<Type>()) == null)
@@ -132,7 +138,6 @@ public abstract partial class RazorSlice
             //     return slice;
             // }
 
-            var sliceVariable = Expression.Variable(sliceType, "slice");
             var modelParam = Expression.Parameter(modelType, "model");
             var returnTarget = Expression.Label(razorOfModelType);
 
@@ -142,6 +147,7 @@ public abstract partial class RazorSlice
                     variables: new[] { sliceVariable },
                     Expression.Assign(sliceVariable, Expression.New(sliceType)),
                     Expression.Assign(Expression.MakeMemberAccess(sliceVariable, modelPropInfo), modelParam),
+                    Expression.Assign(layoutMember, Expression.Constant(layoutPath)),
                     Expression.Label(returnTarget, sliceVariable)
                 ),
                 name: "CreateSlice",
@@ -149,10 +155,20 @@ public abstract partial class RazorSlice
             .Compile();
         }
 
-        return Expression.Lambda<SliceFactory>(Expression.New(sliceType)).Compile();
+        return Expression.Lambda(
+            delegateType: typeof(SliceFactory),
+            body: Expression.Block(
+                variables: new[] { sliceVariable },
+                Expression.Assign(sliceVariable, Expression.New(sliceType)),
+                Expression.Assign(layoutMember, Expression.Constant(layoutPath)),
+                Expression.Label(Expression.Label(typeof(RazorSlice)), sliceVariable)
+            ),
+            name: "CreateSlice",
+            parameters: null
+        ).Compile();
     }
 
-    private static Delegate GetSliceFactory(Type sliceType, IEnumerable<PropertyInfo> injectableProperties)
+    private static Delegate GetSliceWithServicesFactory(Type sliceType, IEnumerable<PropertyInfo> injectableProperties)
     {
         Type serviceProviderType = typeof(IServiceProvider);
         Type serviceProviderExtensionsType = typeof(ServiceProviderServiceExtensions);
@@ -166,6 +182,15 @@ public abstract partial class RazorSlice
 
         var sliceVariable = Expression.Variable(sliceType, "slice");
         var serviceProviderParam = Expression.Parameter(serviceProviderType, "serviceProvider");
+
+        // Create expression to set Layout
+        var layoutAttribute = sliceType.GetCustomAttribute<LayoutAttribute>();
+        if (layoutAttribute != null)
+        {
+            string layoutPath = layoutAttribute.Identifier;
+            var layoutMember = Expression.MakeMemberAccess(sliceVariable, sliceType.GetProperty(nameof(Layout))!);
+            expressions.Add(Expression.Assign(layoutMember, Expression.Constant(layoutPath)));
+        }
 
         // Create expressions to set all the injectable properties
         foreach (PropertyInfo injectablePropertyInfo in injectableProperties)
@@ -400,12 +425,7 @@ public abstract partial class RazorSlice
 
     private static Type ResolveSliceType(string sliceName, Type mustBeAssignableTo)
     {
-        if (!_slicesByName.ContainsKey(sliceName))
-        {
-            throw new ArgumentException($"No Razor slice with name '{sliceName}' was found.", nameof(sliceName));
-        }
-
-        var sliceDefinition = _slicesByName[sliceName];
+        var sliceDefinition = ResolveSliceDefinition(sliceName);
         var sliceType = sliceDefinition.SliceType;
 
         if (!sliceType.IsAssignableTo(mustBeAssignableTo))
@@ -419,16 +439,11 @@ public abstract partial class RazorSlice
 
     private static SliceFactory ResolveSliceFactoryImpl(string sliceName)
     {
-        if (!_slicesByName.ContainsKey(sliceName))
-        {
-            throw new ArgumentException($"No Razor slice with name '{sliceName}' was found.", nameof(sliceName));
-        }
-
-        var sliceDefinition = _slicesByName[sliceName];
+        var sliceDefinition = ResolveSliceDefinition(sliceName);
 
         if (sliceDefinition.HasInjectableProperties)
         {
-            throw new InvalidOperationException($"{sliceName} has injectable properties but IServiceProvider is not provided");
+            throw new InvalidOperationException($"{sliceName} has injectable properties, please use ResolveSliceWithServiceFactory instead.");
         }
 
         return (SliceFactory)sliceDefinition.Factory;
@@ -436,24 +451,13 @@ public abstract partial class RazorSlice
 
     private static SliceWithServicesFactory ResolveSliceWithServiceFactoryImpl(string sliceName)
     {
-        if (!_slicesByName.ContainsKey(sliceName))
-        {
-            throw new ArgumentException($"No Razor slice with name '{sliceName}' was found.", nameof(sliceName));
-        }
-
-        var sliceDefinition = _slicesByName[sliceName];
-
+        var sliceDefinition = ResolveSliceDefinition(sliceName);
         return (SliceWithServicesFactory)sliceDefinition.Factory;
     }
 
     private static SliceFactory<TModel> ResolveSliceFactoryImpl<TModel>(string sliceName)
     {
-        if (!_slicesByName.ContainsKey(sliceName))
-        {
-            throw new ArgumentException($"No Razor slice with name '{sliceName}' was found.", nameof(sliceName));
-        }
-
-        var sliceDefinition = _slicesByName[sliceName];
+        var sliceDefinition = ResolveSliceDefinition(sliceName);
 
         if (sliceDefinition.HasInjectableProperties)
         {
@@ -476,12 +480,7 @@ public abstract partial class RazorSlice
 
     private static SliceWithServicesFactory<TModel> ResolveSliceWithServiceFactoryImpl<TModel>(string sliceName)
     {
-        if (!_slicesByName.ContainsKey(sliceName))
-        {
-            throw new ArgumentException($"No Razor slice with name '{sliceName}' was found.", nameof(sliceName));
-        }
-
-        var sliceDefinition = _slicesByName[sliceName];
+        var sliceDefinition = ResolveSliceDefinition(sliceName);
 
         if (sliceDefinition.Factory is SliceWithServicesFactory<TModel> factory)
         {
@@ -495,5 +494,15 @@ public abstract partial class RazorSlice
         }
 
         throw new InvalidOperationException($"Razor slice with name '{sliceName}' was found but does not declare a model type. Ensure the slice uses `@inherits RazorSlice<{typeof(TModel).Name}>` or `@inherits RazorSliceHttpResult<{typeof(TModel).Name}>` to declare the model type.");
+    }
+
+    private static SliceDefinition ResolveSliceDefinition(string sliceName)
+    {
+        if (!_slicesByName.ContainsKey(sliceName))
+        {
+            throw new ArgumentException($"No Razor slice with name '{sliceName}' was found.", nameof(sliceName));
+        }
+
+        return _slicesByName[sliceName];
     }
 }

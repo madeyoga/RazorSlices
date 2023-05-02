@@ -1,4 +1,5 @@
 ﻿using System.Buffers;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
@@ -9,6 +10,7 @@ using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Html;
 using Microsoft.AspNetCore.Internal;
 using Microsoft.AspNetCore.Razor.TagHelpers;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace RazorSlices;
 
@@ -25,12 +27,22 @@ public abstract partial class RazorSlice : IDisposable
     private Dictionary<string, Func<Task>>? _sectionWriters;
 
     /// <summary>
+    /// 
+    /// </summary>
+    public string? Layout { get; set; }
+
+    /// <summary>
+    /// 
+    /// </summary>
+    public HtmlString? BodyContent { get; set; }
+
+    /// <summary>
     /// Implemented by the generated template class.
     /// </summary>
     /// <remarks>
     /// This method should not be called directly. Call
-    /// <see cref="RenderAsync(IBufferWriter{byte}, Func{CancellationToken, ValueTask}?, HtmlEncoder?)"/> or
-    /// <see cref="RenderAsync(TextWriter, HtmlEncoder?)"/> instead to render the template.
+    /// <see cref="RenderAsync(IBufferWriter{byte}, Func{CancellationToken, ValueTask}?, HtmlEncoder?, IServiceProvider?)"/> or
+    /// <see cref="RenderAsync(TextWriter, HtmlEncoder?, IServiceProvider?)"/> instead to render the template.
     /// </remarks>
     /// <returns>A <see cref="Task"/> representing the execution of the template.</returns>
     public abstract Task ExecuteAsync();
@@ -41,13 +53,18 @@ public abstract partial class RazorSlice : IDisposable
     /// <param name="bufferWriter">The <see cref="IBufferWriter{T}"/> to render the template to.</param>
     /// <param name="flushAsync">An optional delegate that flushes the <see cref="IBufferWriter{T}"/>.</param>
     /// <param name="htmlEncoder">An optional <see cref="HtmlEncoder"/> instance to use when rendering the template. If none is specified, <see cref="HtmlEncoder.Default"/> will be used.</param>
+    /// <param name="serviceProvider"></param>
     /// <returns>A <see cref="ValueTask"/> representing the rendering of the template.</returns>
     [MemberNotNull(nameof(_bufferWriter))]
-    public ValueTask RenderAsync(IBufferWriter<byte> bufferWriter, Func<CancellationToken, ValueTask>? flushAsync = null, HtmlEncoder? htmlEncoder = null)
+    public ValueTask RenderAsync(IBufferWriter<byte> bufferWriter, Func<CancellationToken, ValueTask>? flushAsync = null, HtmlEncoder? htmlEncoder = null, IServiceProvider? serviceProvider = null)
     {
         ArgumentNullException.ThrowIfNull(bufferWriter);
 
         // TODO: Render via layout if LayoutAttribute is set
+        if (!string.IsNullOrEmpty(Layout))
+        {
+            return RenderLayout(bufferWriter, flushAsync, htmlEncoder, serviceProvider);
+        }
 
         _bufferWriter = bufferWriter;
         _textWriter = null;
@@ -71,14 +88,19 @@ public abstract partial class RazorSlice : IDisposable
     /// </summary>
     /// <param name="textWriter">The <see cref="TextWriter"/> to render the template to.</param>
     /// <param name="htmlEncoder">An optional <see cref="HtmlEncoder"/> instance to use when rendering the template. If none is specified, <see cref="HtmlEncoder.Default"/> will be used.</param>
+    /// <param name="serviceProvider"></param>
     /// <returns>A <see cref="ValueTask"/> representing the rendering of the template.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="textWriter"/> is <c>null</c>.</exception>
     [MemberNotNull(nameof(_textWriter), nameof(_outputFlush))]
-    public ValueTask RenderAsync(TextWriter textWriter, HtmlEncoder? htmlEncoder = null)
+    public ValueTask RenderAsync(TextWriter textWriter, HtmlEncoder? htmlEncoder = null, IServiceProvider? serviceProvider = null)
     {
         ArgumentNullException.ThrowIfNull(textWriter);
 
         // TODO: Render via layout if LayoutAttribute is set
+        if (!string.IsNullOrEmpty(Layout))
+        {
+            return RenderLayout(textWriter, htmlEncoder, serviceProvider);
+        }
 
         _bufferWriter = null;
         _textWriter = textWriter;
@@ -100,6 +122,186 @@ public abstract partial class RazorSlice : IDisposable
             return ValueTask.CompletedTask;
         }
         return new ValueTask(executeTask);
+    }
+
+    private ValueTask RenderLayout(IBufferWriter<byte> bufferWriter, Func<CancellationToken, ValueTask>? flushAsync = null, HtmlEncoder? htmlEncoder = null, IServiceProvider? serviceProvider = null)
+    {
+        if (Layout == null)
+        {
+            throw new InvalidOperationException("RenderLayout is being called while Layout is null");
+        }
+
+        _bufferWriter = null;
+        _textWriter ??= new StringWriter();
+        _htmlEncoder = htmlEncoder ?? _htmlEncoder;
+
+        // Write output using _textWriter and define _sectionWriters
+        var executeTask = ExecuteAsync();
+
+        if (executeTask.IsCompletedSuccessfully)
+        {
+            executeTask.GetAwaiter().GetResult();
+        }
+
+        // Create layout slice
+        RazorSlice layoutSlice;
+        SliceDefinition definition = ResolveSliceDefinition(Layout);
+        if (definition.HasInjectableProperties)
+        {
+            if (serviceProvider == null)
+            {
+                throw new InvalidOperationException($"{Layout} has injectable properties but IServiceProvider is not provided");
+            }
+            layoutSlice = Create((SliceWithServicesFactory)definition.Factory, serviceProvider);
+        }
+        else
+        {
+            layoutSlice = Create((SliceFactory) definition.Factory);
+        }
+
+        // Pass the _sectionWriters to layout _sectionWriters.
+        layoutSlice._sectionWriters = _sectionWriters;
+
+        // Store output written by _textWriter as layout BodyContent
+        layoutSlice.BodyContent = new HtmlString(_textWriter.ToString());
+
+        // Since _sectionWriters passed to the layoutSlice would still use the current slice _bufferWriter and _textWriter to write the output,
+        // When the current layout is root, we don't want to capture / store the output,
+        // instead write the section output directly using the bufferWriter.
+        if (string.IsNullOrEmpty(layoutSlice.Layout))
+        {
+            _bufferWriter = bufferWriter;
+            _outputFlush = flushAsync;
+        }
+        // When the current layout has a layout, we want the layout to capture the output of sectionWriter using _textWriter
+        // and then pass the output captured to the next layout.
+        else
+        {
+            // Clear the string builder and pass the textWriter to layout
+            (_textWriter as StringWriter)!.GetStringBuilder().Clear();
+            layoutSlice._textWriter = _textWriter;
+            _outputFlush = (_) =>
+            {
+                var flushTask = _textWriter.FlushAsync();
+                if (flushTask.IsCompletedSuccessfully)
+                {
+                    return ValueTask.CompletedTask;
+                }
+                return AwaitOutputFlushTask(flushTask);
+            };
+        }
+
+        // Render layout slice
+        var layoutTask = layoutSlice.RenderAsync(bufferWriter, flushAsync, htmlEncoder: htmlEncoder, serviceProvider: serviceProvider);
+
+        if (layoutTask.IsCompletedSuccessfully)
+        {
+            layoutTask.GetAwaiter().GetResult();
+            return ValueTask.CompletedTask;
+        }
+
+        return layoutTask;
+    }
+    
+    private ValueTask RenderLayout(TextWriter textWriter, HtmlEncoder? htmlEncoder = null, IServiceProvider? serviceProvider = null)
+    {
+        if (Layout == null)
+        {
+            throw new InvalidOperationException("RenderLayout is being called while Layout is null");
+        }
+
+        _bufferWriter = null;
+        _textWriter ??= new StringWriter();
+        _htmlEncoder = htmlEncoder ?? _htmlEncoder;
+        _outputFlush = (_) =>
+        {
+            var flushTask = textWriter.FlushAsync();
+            if (flushTask.IsCompletedSuccessfully)
+            {
+                return ValueTask.CompletedTask;
+            }
+            return AwaitOutputFlushTask(flushTask);
+        };
+
+        // Write output using _textWriter and define _sectionWriters
+        var executeTask = ExecuteAsync();
+
+        if (executeTask.IsCompletedSuccessfully)
+        {
+            executeTask.GetAwaiter().GetResult();
+        }
+
+        // Create layout slice
+        RazorSlice layoutSlice;
+        SliceDefinition definition = ResolveSliceDefinition(Layout);
+        if (definition.HasInjectableProperties)
+        {
+            if (serviceProvider == null)
+            {
+                throw new InvalidOperationException($"{Layout} has injectable properties but IServiceProvider is not provided");
+            }
+            layoutSlice = Create((SliceWithServicesFactory)definition.Factory, serviceProvider);
+        }
+        else
+        {
+            layoutSlice = Create((SliceFactory)definition.Factory);
+        }
+
+        // Pass the _sectionWriters to layout _sectionWriters.
+        layoutSlice._sectionWriters = _sectionWriters;
+
+        // Store output written by _textWriter as layout BodyContent
+        layoutSlice.BodyContent = new HtmlString(_textWriter.ToString());
+
+        // Since _sectionWriters passed to the layoutSlice would still use the current slice _bufferWriter and _textWriter to write the output,
+        // When the current layout is root, we don't want to capture / store the output,
+        // instead write the section output directly using the textWriter.
+        if (string.IsNullOrEmpty(layoutSlice.Layout))
+        {
+            _textWriter = textWriter;
+        }
+        // When the current layout has a layout, we still want to capture the output of sectionWriter using _textWriter
+        // and then pass the captured output to the next layout.
+        else
+        {
+            // Clear the string builder and pass the textWriter to layout
+            (_textWriter as StringWriter)!.GetStringBuilder().Clear();
+            layoutSlice._textWriter = _textWriter;
+            _outputFlush = (_) =>
+            {
+                var flushTask = _textWriter.FlushAsync();
+                if (flushTask.IsCompletedSuccessfully)
+                {
+                    return ValueTask.CompletedTask;
+                }
+                return AwaitOutputFlushTask(flushTask);
+            };
+        }
+
+        // Render layout slice
+        var layoutTask = layoutSlice.RenderAsync(textWriter, htmlEncoder: htmlEncoder, serviceProvider: serviceProvider);
+
+        if (layoutTask.IsCompletedSuccessfully)
+        {
+            layoutTask.GetAwaiter().GetResult();
+            return ValueTask.CompletedTask;
+        }
+
+        return layoutTask;
+    }
+
+    /// <summary>
+    /// Renders the portion of a content page that is not within a named section.
+    /// </summary>
+    /// <returns>The HTML content to render.</returns>
+    protected virtual IHtmlContent RenderBody()
+    {
+        if (BodyContent == null)
+        {
+            return HtmlString.Empty;
+        }
+        WriteHtml(BodyContent);
+        return BodyContent;
     }
 
     private static async ValueTask AwaitOutputFlushTask(Task flushTask)
@@ -143,6 +345,15 @@ public abstract partial class RazorSlice : IDisposable
     }
 
     /// <summary>
+    /// 
+    /// </summary>
+    /// <param name="sectionName">The name of the section.</param>
+    /// <param name="section">The section delegate.</param>
+    [EditorBrowsable(EditorBrowsableState.Never)]
+    protected void DefineSection(string sectionName, Func<object?, Task> section)
+        => DefineSection(sectionName, () => section(null /* writer */));
+
+    /// <summary>
     /// Defines a section that can be rendered on-demand via <see cref="RenderSectionAsync(string, bool)"/>.
     /// </summary>
     /// <remarks>
@@ -168,16 +379,45 @@ public abstract partial class RazorSlice : IDisposable
     }
 
     /// <summary>
+    /// Renders the content of the section named <paramref name="sectionName"/>.
+    /// </summary>
+    /// <param name="sectionName">The name of the section to render.</param>
+    /// <returns>An empty <see cref="HtmlString"/>.</returns>
+    protected HtmlString RenderSection(string sectionName)
+    {
+        ArgumentNullException.ThrowIfNull(nameof(sectionName));
+        return RenderSection(sectionName, required: true);
+    }
+
+    /// <summary>
+    /// Renders the content of the section named <paramref name="sectionName"/>.
+    /// </summary>
+    /// <param name="sectionName">The name of the section to render.</param>
+    /// <param name="required">Indicates if this section must be rendered.</param>
+    /// <returns>An empty <see cref="HtmlString"/>.</returns>
+    protected HtmlString RenderSection(string sectionName, bool required)
+    {
+        ArgumentNullException.ThrowIfNull(nameof(sectionName));
+        var task = RenderSectionAsync(sectionName, required);
+
+        if (task.IsCompletedSuccessfully)
+        {
+            return task.GetAwaiter().GetResult();
+        }
+
+        return HtmlString.Empty;
+    }
+
+    /// <summary>
     /// Renders the section with the specified name.
     /// </summary>
     /// <param name="sectionName">The section name.</param>
     /// <param name="required">Whether the section is required or not.</param>
     /// <returns>A <see cref="ValueTask{TResult}"/> representing the rendering of the section.</returns>
     /// <exception cref="ArgumentException">Thrown when no section with name <paramref name="sectionName"/> has been defined by the slice being rendered.</exception>
-    /// <exception cref="NotImplementedException"></exception>
     protected ValueTask<HtmlString> RenderSectionAsync(string sectionName, bool required)
     {
-        var sectionDefined = _sectionWriters?.ContainsKey(sectionName) != true;
+        var sectionDefined = _sectionWriters?.ContainsKey(sectionName) != false;
         if (required && !sectionDefined)
         {
             throw new ArgumentException($"The section '{sectionName}' has not been declared by the slice being rendered.");
@@ -187,7 +427,20 @@ public abstract partial class RazorSlice : IDisposable
             return ValueTask.FromResult(HtmlString.Empty);
         }
 
-        throw new NotImplementedException("Haven't implemented layouts yet, but will!");
+        var section = _sectionWriters![sectionName];
+        var task = section();
+        if (task.IsCompletedSuccessfully)
+        {
+            task.GetAwaiter().GetResult();
+            return ValueTask.FromResult(HtmlString.Empty);
+        }
+        return AwaitRenderSectionAsyncTask(task);
+    }
+
+    private static async ValueTask<HtmlString> AwaitRenderSectionAsyncTask(Task renderSectionTask)
+    {
+        await renderSectionTask;
+        return HtmlString.Empty;
     }
 
     /// <summary>
