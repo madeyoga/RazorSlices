@@ -1,0 +1,21 @@
+﻿@using RazorSlices;
+@using RazorSlices.Samples.WebApp.Services;
+@attribute [Layout("/Slices/Layout.cshtml")]
+@inject LoremService loremService
+
+@{
+    var title = "Support for layout and sections";
+}
+
+@section Header {
+    <title>@title</title>
+}
+
+<div class="container">
+    <h1 class="mt-5">@title</h1>
+    <p class="text-success">This Lorem Ipsum sentences was created using dependency-injected properties!</p>
+    @for (var i = 0; i < 4; i++)
+    {
+        <p>@loremService.Sentences(4)</p>
+    }
+</div>

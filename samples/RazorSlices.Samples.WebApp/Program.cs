@@ -44,6 +44,10 @@ app.MapGet("/render-to-stringbuilder", async (IServiceProvider serviceProvider) 
     await slice.RenderAsync(stringBuilder);
     return Results.Ok(new { HtmlString = stringBuilder.ToString() });
 });
+app.MapGet("/layout", (IServiceProvider serviceProvider) =>
+{
+    return Results.Extensions.RazorSlice("/Slices/LayoutImpl.cshtml", serviceProvider);
+});
 
 app.MapGet("/", () => Results.Extensions.RazorSlice("/Slices/Todos.cshtml", Todos.AllTodos));
 app.MapGet("/{id:int}", (int id) =>
